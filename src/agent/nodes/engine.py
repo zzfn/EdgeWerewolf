@@ -1,181 +1,161 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Any, Optional, Literal
 from src.agent.state import GameState, Message
-from src.agent.schema import NightAction
 
-def settle_night(state: GameState) -> GameState:
+def game_master_node(state: GameState) -> GameState:
     """
-    结算夜晚行动逻辑 (上帝视角)
+    逻辑中心 (GM)：硬编码。
+    职责：判定胜负、切换昼夜、决定下一个行动者或环节。
     """
-    turn_type = state.get("turn_type")
-    
-    if turn_type == "night_settle":
-        actions = state.get("night_actions", {})
-        wolf_kill_id = actions.get("wolf_kill")
-        guard_id = actions.get("guard_protect")
-        witch_save_id = actions.get("witch_save")
-        witch_poison_id = actions.get("witch_poison")
-        
-        dead_ids = set()
-        
-        # 1. 处理狼人击杀
-        if wolf_kill_id is not None:
-            is_guarded = (wolf_kill_id == guard_id)
-            is_saved = (wolf_kill_id == witch_save_id)
-            
-            if is_guarded and is_saved:
-                dead_ids.add(wolf_kill_id)
-            elif not is_guarded and not is_saved:
-                dead_ids.add(wolf_kill_id)
-                
-        # 2. 处理女巫毒药
-        if witch_poison_id is not None:
-            dead_ids.add(witch_poison_id)
-            
-        new_dead = list(dead_ids)
-        current_alive = state["alive_players"]
-        new_alive = [p_id for p_id in current_alive if p_id not in new_dead]
-        
-        return {
-            **state,
-            "alive_players": new_alive,
-            "last_night_dead": new_dead,
-            "phase": "day",
-            "turn_type": "day_announcement",
-            "night_actions": {},
-            "queue": [],
-            "current_speaker_id": None
-        }
-    
-    elif turn_type == "day_announcement":
-        # 发布公告
-        dead_info = "昨晚是平安夜。" if not state["last_night_dead"] else f"昨晚死亡的是：{', '.join([str(d) for d in state['last_night_dead']])}号玩家。"
-        msg = Message(role="system", content=f"【上帝公告】第{state['day_count']}天。{dead_info}")
-        state["history"].append(msg)
-        
-        # 直接由 next_turn 接手填充队列，这里只负责清理
-        return {
-            **state,
-            "turn_type": "discussion",
-            "queue": [],
-            "current_speaker_id": None
-        }
-        
-    return state
-
-def check_winner(state: GameState) -> GameState:
-    """
-    检查游戏是否结束。
-    """
+    # 1. 判定胜负
     players = state["players"]
     alive_ids = state["alive_players"]
     
     wolf_count = 0
     human_count = 0
-    
     for p_id in alive_ids:
-        player = next(p for p in players if p.id == p_id)
-        if player.role == "werewolf":
+        p = next(player for player in players if player.id == p_id)
+        if p.role == "werewolf":
             wolf_count += 1
         else:
             human_count += 1
             
     if wolf_count == 0:
         return {**state, "game_over": True, "winner_side": "villager"}
-    
     if wolf_count >= human_count:
         return {**state, "game_over": True, "winner_side": "werewolf"}
-        
-    return state
 
-def next_turn(state: GameState) -> GameState:
-    """
-    状态机进度管理器。
-    核心逻辑：如果一个环节的队列为空，则自动递归推进到下一个环节，直到找到有人的环节或结算点。
-    """
-    if state.get("game_over"):
-        return state
-
-    # 1. 优先消耗队列
-    if state.get("queue"):
-        next_id = state["queue"].pop(0)
-        return {**state, "current_speaker_id": next_id}
-
-    # 2. 队列为空，尝试推进环节
+    # 2. 调度逻辑
     phase = state["phase"]
     turn_type = state["turn_type"]
-    players = state["players"]
-    alive_ids = state["alive_players"]
-
-    # 定义流程顺序
-    flow = {
-        "night": ["guard_protect", "wolf_kill", "seer_check", "witch_action", "night_settle"],
-        "day": ["day_announcement", "discussion", "voting"]
-    }
-
-    # 找到当前环节在流程中的位置
-    current_flow = flow[phase]
-    try:
-        idx = current_flow.index(turn_type)
-    except ValueError:
-        idx = -1
-
-    # 尝试寻找下一个有人的环节
-    while True:
-        idx += 1
-        # 如果当前阶段走完了，切换阶段
-        if idx >= len(current_flow):
-            if phase == "night":
-                # 夜晚结束，虽然逻辑上 night_settle 应该已经把 phase 改成了 day
-                # 但为了健壮性，这里做保底
-                phase = "day"
-                idx = 0
-                current_flow = flow[phase]
-            else:
-                # 白天结束，进下一晚
-                phase = "night"
-                idx = 0
-                current_flow = flow[phase]
-                state["day_count"] += 1
-
-        next_turn_type = current_flow[idx]
+    
+    # 如果讨论环节还有人没发言
+    if turn_type == "discussion" and state.get("discussion_queue"):
+        new_queue = list(state["discussion_queue"])
+        next_id = new_queue.pop(0)
+        return {**state, "discussion_queue": new_queue, "current_player_id": next_id}
         
-        # 特殊处理结算节点，它们在图中是独立存在的，直接返回让图去跳转
-        if next_turn_type in ["night_settle", "day_announcement"]:
-            return {**state, "phase": phase, "turn_type": next_turn_type, "queue": [], "current_speaker_id": None}
+    # 如果投票环节还有人没投
+    if turn_type == "voting" and state.get("discussion_queue"): # 复用队列
+        new_queue = list(state["discussion_queue"])
+        next_id = new_queue.pop(0)
+        return {**state, "discussion_queue": new_queue, "current_player_id": next_id}
 
-        # 计算下一个环节的队列
-        new_queue = []
-        if next_turn_type == "guard_protect":
-            new_queue = [p.id for p in players if p.role == "guard" and p.is_alive]
-        elif next_turn_type == "wolf_kill":
-            new_queue = [p.id for p in players if p.role == "werewolf" and p.is_alive]
-        elif next_turn_type == "seer_check":
-            # 查验反馈 (如果是从 seer_check 推进走的，先补处理反馈)
-            if turn_type == "seer_check":
-                target_id = state["night_actions"].get("seer_check")
-                if target_id:
-                    target_p = next(p for p in players if p.id == target_id)
-                    seer = next((p for p in players if p.role == "seer"), None)
-                    if seer:
-                        res = "狼人" if target_p.role == "werewolf" else "好人"
-                        info = f"系统反馈：{target_id}号玩家({target_p.name})的身份是【{res}】。"
-                        seer.private_history.append(Message(role="system", content=info))
-            new_queue = [p.id for p in players if p.role == "seer" and p.is_alive]
-        elif next_turn_type == "witch_action":
-            new_queue = [p.id for p in players if p.role == "witch" and p.is_alive]
-        elif next_turn_type == "discussion" or next_turn_type == "voting":
-            new_queue = sorted(alive_ids)
-
-        if new_queue:
-            # 找到有人的环节了
-            next_id = new_queue.pop(0)
+    # 环节自动推进逻辑 (GM 作为指挥棒)
+    if phase == "night":
+        # 夜晚流程点名顺序：守卫 -> 狼人 -> 预言家 -> 女巫
+        order = ["guard_protect", "wolf_kill", "seer_check", "witch_action"]
+        try:
+            current_idx = order.index(turn_type)
+        except ValueError:
+            current_idx = -1
+            
+        # 确定搜索起点：如果当前还没点名或点名人不在当前环节，从当前环节开始搜；
+        # 如果当前人刚行动完，从下一个环节开始搜。
+        start_idx = current_idx if state.get("current_player_id") is None else current_idx + 1
+        
+        # 寻找下一个有人参与的夜晚环节
+        for i in range(start_idx, len(order)):
+            next_type = order[i]
+            # 检查对应角色是否存活
+            role_map = {
+                "guard_protect": "guard",
+                "wolf_kill": "werewolf",
+                "seer_check": "seer",
+                "witch_action": "witch"
+            }
+            target_role = role_map[next_type]
+            actor = next((p for p in players if p.role == target_role and p.is_alive), None)
+            
+            if actor:
+                return {**state, "turn_type": next_type, "current_player_id": actor.id}
+        
+        # 如果走完所有夜晚角色，进入结算
+        return {**state, "turn_type": "night_settle", "current_player_id": None}
+        
+    if phase == "day":
+        if turn_type == "day_announcement":
+            # 公告完自动进讨论，准备队列
             return {
                 **state, 
-                "phase": phase, 
-                "turn_type": next_turn_type, 
-                "queue": new_queue, 
-                "current_speaker_id": next_id
+                "turn_type": "discussion", 
+                "discussion_queue": sorted(state["alive_players"]),
+                "current_player_id": None # 准备进入 Player_Agent 循环
             }
+        elif turn_type == "discussion" and not state["discussion_queue"]:
+            # 讨论完进投票，准备队列
+            return {
+                **state, 
+                "turn_type": "voting", 
+                "discussion_queue": sorted(state["alive_players"]), # 复用
+                "current_player_id": None 
+            }
+        elif turn_type == "voting" and not state["discussion_queue"]:
+            # 投票完进夜晚，天数+1
+            return {
+                **state,
+                "phase": "night",
+                "day_count": state["day_count"] + 1,
+                "turn_type": "guard_protect", # 重置为夜晚起点
+                "current_player_id": None
+            }
+
+    return state
+
+def action_handler_node(state: GameState) -> GameState:
+    """
+    行动节点 (Action)：硬编码。
+    职责：处理具体的结算逻辑（杀人、验人结果同步、公告产生）。
+    """
+    turn_type = state["turn_type"]
+    
+    if turn_type == "night_settle":
+        actions = state.get("night_actions", {})
+        wolf_kill = actions.get("wolf_kill")
+        guard_protect = actions.get("guard_protect")
+        witch_save = actions.get("witch_save")
+        witch_poison = actions.get("witch_poison")
         
-        # 如果该环节没人，继续 while 循环寻找下一个环节
-        turn_type = next_turn_type
+        dead_ids = set()
+        if wolf_kill is not None:
+            is_guarded = (wolf_kill == guard_protect)
+            is_saved = (wolf_kill == witch_save)
+            if (is_guarded and is_saved) or (not is_guarded and not is_saved):
+                dead_ids.add(wolf_kill)
+        
+        if witch_poison is not None:
+            dead_ids.add(witch_poison)
+            
+        new_alive = [p_id for p_id in state["alive_players"] if p_id not in dead_ids]
+        
+        # 物理状态更新
+        for player in state["players"]:
+            if player.id in dead_ids:
+                player.is_alive = False
+                
+        return {
+            **state,
+            "alive_players": new_alive,
+            "last_night_dead": list(dead_ids),
+            "phase": "day",
+            "turn_type": "day_announcement",
+            "night_actions": {}, # 清空
+            "votes": {}
+        }
+        
+    if turn_type == "day_announcement":
+        dead_info = "平安夜" if not state["last_night_dead"] else f"玩家 {', '.join(map(str, state['last_night_dead']))} 死亡"
+        msg = Message(role="system", content=f"【上帝公告】第{state['day_count']}天。昨晚是{dead_info}。")
+        state["history"].append(msg)
+        return state
+
+    if turn_type == "seer_check":
+        # 将验人结果物理同步给预言家 (在 Player_Agent 行动后)
+        target_id = state["night_actions"].get("seer_check")
+        if target_id:
+            target_p = next(p for p in state["players"] if p.id == target_id)
+            seer = next(p for p in state["players"] if p.role == "seer")
+            res = "狼人" if target_p.role == "werewolf" else "好人"
+            msg = f"查验反馈：{target_id}号玩家的身份是【{res}】。"
+            seer.private_history.append(Message(role="system", content=msg))
+            
+    return state

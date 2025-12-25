@@ -19,7 +19,6 @@ from langfuse.langchain import CallbackHandler
 load_dotenv()
 
 # 初始化 DeepSeek 模型
-# DeepSeek API 兼容 OpenAI 格式
 llm = ChatOpenAI(
     model="deepseek-chat", 
     openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
@@ -31,12 +30,11 @@ def get_role_instructions(player: PlayerState, state: GameState) -> str:
     """根据角色生成特定的指令"""
     role = player.role
     if role == "werewolf":
-        teammates = [p.name for p in state["players"] if p.role == "werewolf" and p.id != player.id]
+        teammates = [str(p.id) for p in state["players"] if p.role == "werewolf" and p.id != player.id]
         return WOLF_INSTRUCTIONS.format(teammates=", ".join(teammates))
     elif role == "villager":
         return VILLAGER_INSTRUCTIONS
     elif role == "seer":
-        # 获取该预言家的验人记录
         history_msgs = [m.content for m in player.private_history if m.role == "system"]
         check_history = "\n".join(history_msgs) if history_msgs else "暂无记录"
         return SEER_INSTRUCTIONS.format(check_history=check_history)
@@ -48,80 +46,66 @@ def get_role_instructions(player: PlayerState, state: GameState) -> str:
         return WITCH_INSTRUCTIONS.format(potions_status=status_str)
     return ""
 
-def player_node(state: GameState):
+def player_agent_node(state: GameState):
     """
-    统一的玩家决策节点。
+    智能体执行节点 (Player_Agent)：LLM 驱动。
+    职责：根据当前身份、公共历史和私有想法，生成发言、内心思考或结构化动作。
     """
-    turn_type = state.get("turn_type")
-    phase = state.get("phase")
-    
-    # 确定当前行动的玩家 ID
-    # 这里逻辑可以根据 turn_type 细化
-    current_player_id = state.get("current_speaker_id")
-    
-    # 如果是夜晚且没有指定 speaker，可能需要根据 turn_type 自动确定
-    if phase == "night" and current_player_id is None:
-        if turn_type == "wolf_kill":
-            # 简化：只取第一个存活的狼人作为代表决策，或者循环所有狼人
-            wolves = [p.id for p in state["players"] if p.role == "werewolf" and p.is_alive]
-            current_player_id = wolves[0] if wolves else None
-        elif turn_type == "seer_check":
-            seers = [p.id for p in state["players"] if p.role == "seer" and p.is_alive]
-            current_player_id = seers[0] if seers else None
-        # ... 其他角色同理
-        
-    if current_player_id is None:
+    current_id = state.get("current_player_id")
+    if current_id is None:
         return state
 
-    # 获取玩家对象
-    player = next(p for p in state["players"] if p.id == current_player_id)
-    
+    player = next(p for p in state["players"] if p.id == current_id)
+    phase = state["phase"]
+    turn_type = state["turn_type"]
+
     # 构造 Prompt
     role_instr = get_role_instructions(player, state)
     sys_prompt = BASE_SYSTEM_PROMPT.format(
         role=player.role,
         player_id=player.id,
-        player_name=player.name,
         role_specific_instructions=role_instr
     )
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", "{system_instructions}"),
-        ("human", "当前局势：\n公共历史：{history}\n你的私有想法：{private_thoughts}\n请输出你的决策。")
+        ("human", "当前对局状态：\n阶段：{phase}\n环节：{turn_type}\n公共历史：{history}\n你的私有想法：{private_thoughts}\n请输出你的决策。")
     ])
     
-    # 选择输出 Schema
+    # 结构化输出
     if phase == "night":
         structured_llm = llm.with_structured_output(NightAction, method="function_calling")
     else:
         structured_llm = llm.with_structured_output(AgentOutput, method="function_calling")
         
-    history_str = "\n".join([f"{m.role}: {m.content}" for m in state["history"][-10:]]) # 取最近10条
+    history_str = "\n".join([f"{m.role}: {m.content}" for m in state["history"][-15:]]) 
     private_thoughts_str = "\n".join(player.private_thoughts[-5:])
     
-    # 集成 Langfuse 回调
-    callbacks = []
-    callbacks.append(CallbackHandler())
-
+    # Langfuse 观测
+    langfuse_handler = CallbackHandler()
     
     chain = prompt | structured_llm
     response = chain.invoke({
         "system_instructions": sys_prompt,
+        "phase": phase,
+        "turn_type": turn_type,
         "history": history_str,
         "private_thoughts": private_thoughts_str
-    }, config={"callbacks": callbacks})
+    }, config={"callbacks": [langfuse_handler]})
     
-    # 处理行动
+    # 将决策写入 State (但不执行物理结算)
+    player.private_thoughts.append(response.thought)
+    
     if phase == "night":
-        # 存入夜晚动作缓冲区
+        # 记录夜晚行动意图
         state["night_actions"][turn_type] = response.target_id
-        # 记录内心思考到私有状态
-        player.private_thoughts.append(response.thought)
     else:
         # 白天发言
         if response.speech:
-            new_msg = Message(role=player.role, content=response.speech, player_id=player.id)
-            state["history"].append(new_msg)
-        player.private_thoughts.append(response.thought)
-        
+            msg = Message(role=player.role, content=response.speech, player_id=player.id)
+            state["history"].append(msg)
+        # 如果是投票环节，记录投票意图
+        if turn_type == "voting":
+            state["votes"][player.id] = response.target_id if hasattr(response, 'target_id') else None
+
     return state

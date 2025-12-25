@@ -1,86 +1,46 @@
 import os
 from dotenv import load_dotenv
 from src.agent.graph import graph
-from src.agent.state import PlayerState
+from src.utils.helpers import get_default_state
 
-# 加载环境变量 (API Key)
+# 加载环境变量
 load_dotenv()
 
-def initialize_game():
-    """初始化 12 人经典局配置"""
-    # 定义角色
-    roles = (
-        ["werewolf"] * 4 + 
-        ["villager"] * 4 + 
-        ["seer", "witch", "hunter", "guard"]
-    )
-    
-    # 创建玩家状态
-    players = []
-    names = [
-        "阿尔法", "贝塔", "伽玛", "德尔塔", 
-        "艾普西隆", "泽塔", "艾塔", "西塔", 
-        "约塔", "卡帕", "兰姆达", "缪"
-    ]
-    
-    for i, role in enumerate(roles):
-        players.append(PlayerState(
-            id=i + 1,
-            name=names[i],
-            role=role,
-            is_alive=True,
-            private_history=[],
-            private_thoughts=[]
-        ))
-        
-    # 初始化游戏状态
-    initial_state = {
-        "players": players,
-        "alive_players": [p.id for p in players],
-        "phase": "night",
-        "turn_type": "guard_protect", # 从守卫开始
-        "day_count": 1,
-        "current_speaker_id": None,
-        "history": [],
-        "night_actions": {},
-        "witch_potions": {"save": True, "poison": True},
-        "last_guarded_id": None,
-        "hunter_can_shoot": True,
-        "last_night_dead": [],
-        "game_over": False,
-        "winner_side": None
-    }
-    
-    return initial_state
-
 def run_simulation():
-    """运行游戏模拟"""
-    state = initialize_game()
-    print("--- 🐺 狼人杀 AI 对局开始 🐺 ---")
-    print(f"参与人数: {len(state['players'])}")
+    """运行狼人杀 AI 对局模拟 (零参数自动启动)"""
+    print("--- 🐺 狼人杀 AI 对局开始 (标准 3-节点 架构) 🐺 ---")
     
-    # 运行图形
-    # 注意：在实际 LangGraph dev 中，你可以通过 Studio 观察。
-    # 这里我们通过代码调用来模拟流程。
+    config = {"configurable": {"thread_id": "auto_match_1"}, "recursion_limit": 100}
     
-    # 为了演示，我们只运行几个步骤或直到结束
-    config = {"configurable": {"thread_id": "match_1"}}
-    
-    # 使用 stream 模式观察每一步的输出
-    for event in graph.stream(state, config):
-        for node_name, output in event.items():
-            print(f"\n[节点: {node_name}]")
-            if "turn_type" in output:
-                print(f"阶段: {output['phase']} | 动作: {output['turn_type']}")
-            
-            # 如果有新的历史消息，打印出来
-            if "history" in output and output["history"]:
-                latest_msg = output["history"][-1]
-                print(f">> {latest_msg.role} (玩家 {latest_msg.player_id}): {latest_msg.content}")
+    # 传递空字典，触发图内部的 init 节点进行初始化和身份分配
+    initial_state = {}
+    printed_history_len = 0
+
+    try:
+        for event in graph.stream(initial_state, config):
+            for node_name, output in event.items():
+                # 打印节点名（可选，方便调试）
+                # print(f"\n[{node_name}]", end=" ")
                 
-            if output.get("game_over"):
-                print(f"\n🏆 游戏结束！获胜方: {output['winner_side']}")
-                break
+                # 检查并打印游戏历史新消息
+                current_history = output.get("history", [])
+                if len(current_history) > printed_history_len:
+                    for i in range(printed_history_len, len(current_history)):
+                        msg = current_history[i]
+                        # 格式化输出：[Player X] (角色): 内容
+                        if msg.player_id:
+                            print(f"\n【玩家 {msg.player_id}】({msg.role}): {msg.content}")
+                        else:
+                            # 系统/上帝公告
+                            print(f"\n{msg.content}")
+                    printed_history_len = len(current_history)
+                
+                if output.get("game_over"):
+                    print(f"\n🏆 游戏结束！获胜方: 【{'狼人' if output['winner_side'] == 'werewolf' else '好人'}】")
+                    return
+
+    except Exception as e:
+        print(f"\n❌ 运行出错: {e}")
 
 if __name__ == "__main__":
     run_simulation()
