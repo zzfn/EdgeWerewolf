@@ -1,54 +1,63 @@
-"""LangGraph single-node graph template.
+from typing import Literal, Union
+from langgraph.graph import StateGraph, END, START
+from src.agent.state import GameState
+from src.agent.nodes.engine import settle_night, check_winner, next_turn
+from src.agent.nodes.roles import player_node
+from src.utils.helpers import get_default_state
 
-Returns a predefined response. Replace logic and configuration as needed.
-"""
+def init_node(state: GameState) -> GameState:
+    """如果状态缺失关键信息，则进行初始化"""
+    if not state or "players" not in state or not state["players"]:
+        return get_default_state()
+    return state
 
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Any, Dict
-
-from langgraph.graph import StateGraph
-from langgraph.runtime import Runtime
-from typing_extensions import TypedDict
-
-
-class Context(TypedDict):
-    """Context parameters for the agent.
-
-    Set these when creating assistants OR when invoking the graph.
-    See: https://langchain-ai.github.io/langgraph/cloud/how-tos/configuration_cloud/
+def game_router(state: GameState) -> str:
     """
-
-    my_configurable_param: str
-
-
-@dataclass
-class State:
-    """Input state for the agent.
-
-    Defines the initial structure of incoming data.
-    See: https://langchain-ai.github.io/langgraph/concepts/low_level/#state
+    核心路由器，决定下一步是进行玩家行动还是上帝结算。
     """
+    if state.get("game_over"):
+        return END
+    
+    turn_type = state.get("turn_type")
+    
+    # 需要由 engine 执行的结算环节
+    if turn_type in ["night_settle", "day_announcement"]:
+        return "engine_settle_node"
+            
+    # 需要玩家行为的环节 (其余大部分 turn_type)
+    return "player_node"
 
-    changeme: str = "example"
+# 构建图
+workflow = StateGraph(GameState)
 
+# 添加节点
+workflow.add_node("init_node", init_node)
+workflow.add_node("engine_settle_node", settle_night)
+workflow.add_node("engine_check_node", check_winner)
+workflow.add_node("engine_manager_node", next_turn)
+workflow.add_node("player_node", player_node)
 
-async def call_model(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Process input and returns output.
+# 设置入口与初始循环
+workflow.add_edge(START, "init_node")
+workflow.add_edge("init_node", "engine_check_node")
 
-    Can use runtime context to alter behavior.
-    """
-    return {
-        "changeme": "output from call_model. "
-        f"Configured with {(runtime.context or {}).get('my_configurable_param')}"
+# 核心判定循环：每次行动前先检查胜负
+workflow.add_conditional_edges(
+    "engine_check_node",
+    game_router,
+    {
+        "player_node": "player_node",
+        "engine_settle_node": "engine_settle_node",
+        END: END
     }
-
-
-# Define the graph
-graph = (
-    StateGraph(State, context_schema=Context)
-    .add_node(call_model)
-    .add_edge("__start__", "call_model")
-    .compile(name="New Graph")
 )
+
+# 动作执行完后，必须经过 manager 节点来推进 turn_type
+workflow.add_edge("player_node", "engine_manager_node")
+workflow.add_edge("engine_settle_node", "engine_manager_node")
+
+# manager 推进后，回到 check_node 进行下一轮判定
+workflow.add_edge("engine_manager_node", "engine_check_node")
+
+# 编译
+graph = workflow.compile()
