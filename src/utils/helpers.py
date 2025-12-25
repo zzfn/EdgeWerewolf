@@ -25,6 +25,9 @@ def get_default_state() -> GameState:
             private_thoughts=[]
         ))
         
+    # 计算初始队列 (第一环节是守卫行动)
+    initial_queue = [p.id for p in players if p.role == "guard" and p.is_alive]
+    
     return {
         "players": players,
         "alive_players": [p.id for p in players],
@@ -39,5 +42,6 @@ def get_default_state() -> GameState:
         "hunter_can_shoot": True,
         "last_night_dead": [],
         "game_over": False,
-        "winner_side": None
+        "winner_side": None,
+        "queue": initial_queue
     }

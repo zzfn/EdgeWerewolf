@@ -20,11 +20,11 @@ def game_router(state: GameState) -> str:
     
     turn_type = state.get("turn_type")
     
-    # 需要由 engine 执行的结算环节
+    # 需要由 engine 执行的结算/公告节点
     if turn_type in ["night_settle", "day_announcement"]:
         return "engine_settle_node"
             
-    # 需要玩家行为的环节 (其余大部分 turn_type)
+    # 其余所有涉及玩家决策或队列消耗的环节
     return "player_node"
 
 # 构建图

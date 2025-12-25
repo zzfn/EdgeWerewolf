@@ -38,6 +38,9 @@ class GameState(TypedDict):
     last_guarded_id: Optional[int]
     hunter_can_shoot: bool
     
+    # 队列管理 (新增)
+    queue: List[int] = Field(default_factory=list) # 存放当前环节需要依次行动的玩家 ID
+    
     # 判定结果
     last_night_dead: List[int]
     game_over: bool

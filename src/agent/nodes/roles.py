@@ -13,6 +13,7 @@ from src.agent.prompts.base import (
     WITCH_INSTRUCTIONS,
 )
 from dotenv import load_dotenv
+from langfuse.langchain import CallbackHandler
 
 # 加载环境变量
 load_dotenv()
@@ -35,10 +36,16 @@ def get_role_instructions(player: PlayerState, state: GameState) -> str:
     elif role == "villager":
         return VILLAGER_INSTRUCTIONS
     elif role == "seer":
-        # 获取该预言家的验人记录 (假设存放在 private_thoughts 或定制逻辑中)
-        return SEER_INSTRUCTIONS.format(check_history="暂无")
+        # 获取该预言家的验人记录
+        history_msgs = [m.content for m in player.private_history if m.role == "system"]
+        check_history = "\n".join(history_msgs) if history_msgs else "暂无记录"
+        return SEER_INSTRUCTIONS.format(check_history=check_history)
     elif role == "witch":
-        return WITCH_INSTRUCTIONS.format(potions_status=str(state["witch_potions"]))
+        p = state["witch_potions"]
+        save_status = "【可用】" if p.get("save") else "【已用完】"
+        poison_status = "【可用】" if p.get("poison") else "【已用完】"
+        status_str = f"解药：{save_status}, 毒药：{poison_status}"
+        return WITCH_INSTRUCTIONS.format(potions_status=status_str)
     return ""
 
 def player_node(state: GameState):
@@ -79,7 +86,7 @@ def player_node(state: GameState):
     )
     
     prompt = ChatPromptTemplate.from_messages([
-        ("system", sys_prompt),
+        ("system", "{system_instructions}"),
         ("human", "当前局势：\n公共历史：{history}\n你的私有想法：{private_thoughts}\n请输出你的决策。")
     ])
     
@@ -92,11 +99,17 @@ def player_node(state: GameState):
     history_str = "\n".join([f"{m.role}: {m.content}" for m in state["history"][-10:]]) # 取最近10条
     private_thoughts_str = "\n".join(player.private_thoughts[-5:])
     
+    # 集成 Langfuse 回调
+    callbacks = []
+    callbacks.append(CallbackHandler())
+
+    
     chain = prompt | structured_llm
     response = chain.invoke({
+        "system_instructions": sys_prompt,
         "history": history_str,
         "private_thoughts": private_thoughts_str
-    })
+    }, config={"callbacks": callbacks})
     
     # 处理行动
     if phase == "night":
