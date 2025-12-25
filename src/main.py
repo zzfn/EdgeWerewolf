@@ -1,27 +1,30 @@
 import os
 from dotenv import load_dotenv
 from src.agent.graph import graph
-from src.utils.helpers import get_default_state
+from langfuse.langchain import CallbackHandler
 
 # 加载环境变量
 load_dotenv()
 
 def run_simulation():
-    """运行狼人杀 AI 对局模拟 (零参数自动启动)"""
-    print("--- 🐺 狼人杀 AI 对局开始 (标准 3-节点 架构) 🐺 ---")
+    """运行狼人杀 AI 对局模拟 (12人标准局 + 全链路追踪)"""
+    print("--- 🐺 狼人杀 AI 对局开始 (标准 3-节点 架构 + Langfuse 追踪) 🐺 ---")
     
-    config = {"configurable": {"thread_id": "auto_match_1"}, "recursion_limit": 100}
+    # 初始化 Langfuse 全局对局追踪
+    langfuse_handler = CallbackHandler(trace_name="AI-Werewolf-Match")
     
-    # 传递空字典，触发图内部的 init 节点进行初始化和身份分配
+    config = {
+        "configurable": {"thread_id": "auto_match_v2"}, 
+        "recursion_limit": 100,
+        "callbacks": [langfuse_handler]
+    }
+    
     initial_state = {}
     printed_history_len = 0
 
     try:
         for event in graph.stream(initial_state, config):
             for node_name, output in event.items():
-                # 打印节点名（可选，方便调试）
-                # print(f"\n[{node_name}]", end=" ")
-                
                 # 检查并打印游戏历史新消息
                 current_history = output.get("history", [])
                 if len(current_history) > printed_history_len:

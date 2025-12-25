@@ -39,6 +39,8 @@ def get_default_state() -> GameState:
         "last_guarded_id": None,
         "hunter_can_shoot": True,
         "last_night_dead": [],
+        "sheriff_id": None,
+        "election_candidates": [],
         "game_over": False,
         "winner_side": None
     }

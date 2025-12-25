@@ -41,5 +41,7 @@ class GameState(TypedDict):
     
     # 判定结果 (由 GM/Action 更新)
     last_night_dead: List[int]
+    sheriff_id: Optional[int]
+    election_candidates: List[int]
     game_over: bool
     winner_side: Optional[Literal["werewolf", "villager"]]

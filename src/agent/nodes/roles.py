@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableConfig
 from src.agent.state import GameState, Message, PlayerState
 from src.agent.schema import AgentOutput, NightAction
 from src.agent.prompts.base import (
@@ -36,7 +37,7 @@ def get_role_instructions(player: PlayerState, state: GameState) -> str:
         return VILLAGER_INSTRUCTIONS
     elif role == "seer":
         history_msgs = [m.content for m in player.private_history if m.role == "system"]
-        check_history = "\n".join(history_msgs) if history_msgs else "暂无记录"
+        check_history = "\n - " + "\n - ".join(history_msgs) if history_msgs else "暂无记录"
         return SEER_INSTRUCTIONS.format(check_history=check_history)
     elif role == "witch":
         p = state["witch_potions"]
@@ -46,14 +47,14 @@ def get_role_instructions(player: PlayerState, state: GameState) -> str:
         return WITCH_INSTRUCTIONS.format(potions_status=status_str)
     return ""
 
-def player_agent_node(state: GameState):
+def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]:
     """
     智能体执行节点 (Player_Agent)：LLM 驱动。
     职责：根据当前身份、公共历史和私有想法，生成发言、内心思考或结构化动作。
     """
     current_id = state.get("current_player_id")
     if current_id is None:
-        return state
+        return {}
 
     player = next(p for p in state["players"] if p.id == current_id)
     phase = state["phase"]
@@ -78,12 +79,19 @@ def player_agent_node(state: GameState):
     else:
         structured_llm = llm.with_structured_output(AgentOutput, method="function_calling")
         
-    history_str = "\n".join([f"{m.role}: {m.content}" for m in state["history"][-15:]]) 
+    # 构造历史字符串：显示玩家 ID 而非角色名，防止混淆发言者
+    history_lines = []
+    for m in state["history"][-20:]: # 增加到 20 条，保持更长记忆
+        prefix = f"【玩家 {m.player_id}】" if m.player_id else "【系统公告】"
+        history_lines.append(f"{prefix}: {m.content}")
+    history_str = "\n".join(history_lines)
+    
     private_thoughts_str = "\n".join(player.private_thoughts[-5:])
     
-    # Langfuse 观测
+    # Langfuse 局部观测
     langfuse_handler = CallbackHandler()
     
+    # 执行调用
     chain = prompt | structured_llm
     response = chain.invoke({
         "system_instructions": sys_prompt,
@@ -93,19 +101,39 @@ def player_agent_node(state: GameState):
         "private_thoughts": private_thoughts_str
     }, config={"callbacks": [langfuse_handler]})
     
-    # 将决策写入 State (但不执行物理结算)
-    player.private_thoughts.append(response.thought)
+    # 更新 Player 私有状态
+    updated_players = state["players"]
+    for p in updated_players:
+        if p.id == current_id:
+            p.private_thoughts.append(response.thought)
+            break
+            
+    updates: Dict[str, Any] = {"players": updated_players}
     
     if phase == "night":
-        # 记录夜晚行动意图
-        state["night_actions"][turn_type] = response.target_id
+        updates["night_actions"] = {**state["night_actions"], turn_type: response.target_id}
     else:
         # 白天发言
         if response.speech:
             msg = Message(role=player.role, content=response.speech, player_id=player.id)
-            state["history"].append(msg)
-        # 如果是投票环节，记录投票意图
+            updates["history"] = [msg] 
+        
+        # 如果是投票，更新投票数据
         if turn_type == "voting":
-            state["votes"][player.id] = response.target_id if hasattr(response, 'target_id') else None
+            target_id = response.target_id if hasattr(response, 'target_id') else None
+            updates["votes"] = {**state["votes"], player.id: target_id}
 
-    return state
+        # 处理警长竞选报名
+        if turn_type == "sheriff_nomination":
+            if response.action == "run":
+                current_candidates = list(state.get("election_candidates", []))
+                if player.id not in current_candidates:
+                    current_candidates.append(player.id)
+                updates["election_candidates"] = current_candidates
+
+        # 处理投警长
+        if turn_type == "sheriff_voting":
+            target_id = response.target_id if hasattr(response, 'target_id') else None
+            updates["votes"] = {**state["votes"], player.id: target_id}
+
+    return updates
