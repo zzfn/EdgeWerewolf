@@ -12,6 +12,8 @@ from src.agent.prompts.base import (
     VILLAGER_INSTRUCTIONS,
     SEER_INSTRUCTIONS,
     WITCH_INSTRUCTIONS,
+    HUNTER_INSTRUCTIONS,
+    GUARD_INSTRUCTIONS,
 )
 from dotenv import load_dotenv
 from langfuse.langchain import CallbackHandler
@@ -42,9 +44,13 @@ def get_role_instructions(player: PlayerState, state: GameState) -> str:
     elif role == "witch":
         p = state["witch_potions"]
         save_status = "【可用】" if p.get("save") else "【已用完】"
-        poison_status = "【可用】" if p.get("poison") else "【已用完】"
-        status_str = f"解药：{save_status}, 毒药：{poison_status}"
+        clock_status = "【可用】" if p.get("poison") else "【已_用完】"
+        status_str = f"解药：{save_status}, 毒药：{clock_status}"
         return WITCH_INSTRUCTIONS.format(potions_status=status_str)
+    elif role == "hunter":
+        return HUNTER_INSTRUCTIONS
+    elif role == "guard":
+        return GUARD_INSTRUCTIONS
     return ""
 
 def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]:
@@ -74,7 +80,7 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
     ])
     
     # 结构化输出
-    if phase == "night":
+    if phase == "night" or turn_type == "hunter_shoot":
         structured_llm = llm.with_structured_output(NightAction, method="function_calling")
     else:
         structured_llm = llm.with_structured_output(AgentOutput, method="function_calling")
@@ -110,7 +116,7 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
             
     updates: Dict[str, Any] = {"players": updated_players}
     
-    if phase == "night":
+    if phase == "night" or turn_type == "hunter_shoot":
         updates["night_actions"] = {**state["night_actions"], turn_type: response.target_id}
     else:
         # 白天发言

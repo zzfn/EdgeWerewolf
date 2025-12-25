@@ -11,7 +11,7 @@ class AgentOutput(BaseModel):
 class NightAction(BaseModel):
     """夜晚行动的具体输出结构"""
     thought: str = Field(description="行动时的思考逻辑")
-    action_type: Literal["kill", "check", "protect", "save", "poison", "pass"]
+    action_type: Literal["kill", "check", "protect", "save", "poison", "pass", "shoot"]
     target_id: Optional[int] = Field(description="行动目标玩家 ID")
 
 class DiscussionOutput(BaseModel):

@@ -25,7 +25,7 @@ def routing_logic(state: GameState):
     if current_id is not None:
         return "player_agent"
         
-    if turn_type in ["night_settle", "day_announcement", "sheriff_settle", "voting_settle"]:
+    if turn_type in ["night_settle", "day_announcement", "sheriff_settle", "voting_settle", "execution_announcement", "hunter_announcement"]:
         return "action_handler"
         
     return "game_master"
