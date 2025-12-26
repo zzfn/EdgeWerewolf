@@ -47,6 +47,10 @@ class GameState(TypedDict):
     last_execution_id: Optional[int]
     sheriff_id: Optional[int]
     pending_hunter_shoot: Optional[int]
+    pending_last_words: List[int]          # 等待发表遗言的玩家 ID 列表
+    pending_sheriff_transfer: bool        # 是否处于警徽移交环节
+    pk_candidates: List[int]               # PK 环节的候选人列表
+    speech_order_preference: Optional[Literal["clockwise", "counter_clockwise"]] # 警长指定的发言顺序
     election_candidates: List[int]
     game_over: bool
     winner_side: Optional[Literal["werewolf", "villager"]]
