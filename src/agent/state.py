@@ -12,6 +12,8 @@ class PlayerState(BaseModel):
     id: int
     role: str  # werewolf, villager, seer, witch, hunter, guard
     is_alive: bool = True
+    personality: str = "" # 性格设定：如“逻辑严密”、“容易冲动”、“深沉冷静”
+    style: str = ""       # 发言风格：如“简明扼要”、“富有煽动性”、“爱讲冷笑话”
     private_history: List[Message] = Field(default_factory=list)
     private_thoughts: List[str] = Field(default_factory=list)
 
@@ -29,6 +31,7 @@ class GameState(TypedDict):
     
     # 公共信息 (追加模式)
     history: Annotated[List[Message], operator.add]
+    game_summary: str  # 对局总结（长期记忆）
     
     # 临时决策数据 (Action 消费点)
     night_actions: Dict[str, Any] # {"wolf_kill": 5, ...}
@@ -47,3 +50,8 @@ class GameState(TypedDict):
     election_candidates: List[int]
     game_over: bool
     winner_side: Optional[Literal["werewolf", "villager"]]
+    
+    # 上帝视角增强字段 (非对局核心状态，仅用于可视化显示)
+    last_thought: Optional[str]
+    last_action: Optional[str]
+    last_target: Optional[int]

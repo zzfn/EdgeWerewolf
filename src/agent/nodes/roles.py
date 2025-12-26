@@ -44,7 +44,7 @@ def get_role_instructions(player: PlayerState, state: GameState) -> str:
     elif role == "witch":
         p = state["witch_potions"]
         save_status = "【可用】" if p.get("save") else "【已用完】"
-        clock_status = "【可用】" if p.get("poison") else "【已_用完】"
+        clock_status = "【可用】" if p.get("poison") else "【已用完】"
         status_str = f"解药：{save_status}, 毒药：{clock_status}"
         return WITCH_INSTRUCTIONS.format(potions_status=status_str)
     elif role == "hunter":
@@ -71,12 +71,14 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
     sys_prompt = BASE_SYSTEM_PROMPT.format(
         role=player.role,
         player_id=player.id,
+        personality=player.personality,
+        style=player.style,
         role_specific_instructions=role_instr
     )
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", "{system_instructions}"),
-        ("human", "当前对局状态：\n阶段：{phase}\n环节：{turn_type}\n公共历史：{history}\n你的私有想法：{private_thoughts}\n请输出你的决策。")
+        ("human", "当前对局状态：\n阶段：{phase}\n环节：{turn_type}\n游戏历史大纲（长期记忆）：{game_summary}\n最近发言记录（短期记忆）：\n{history}\n你的私有想法：{private_thoughts}\n请输出你的决策。")
     ])
     
     # 结构化输出
@@ -87,7 +89,7 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
         
     # 构造历史字符串：显示玩家 ID 而非角色名，防止混淆发言者
     history_lines = []
-    for m in state["history"][-20:]: # 增加到 20 条，保持更长记忆
+    for m in state["history"][-15:]: # 缩减到 15 条短期记忆
         prefix = f"【玩家 {m.player_id}】" if m.player_id else "【系统公告】"
         history_lines.append(f"{prefix}: {m.content}")
     history_str = "\n".join(history_lines)
@@ -103,6 +105,7 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
         "system_instructions": sys_prompt,
         "phase": phase,
         "turn_type": turn_type,
+        "game_summary": state.get("game_summary", ""),
         "history": history_str,
         "private_thoughts": private_thoughts_str
     }, config={"callbacks": [langfuse_handler]})
@@ -114,7 +117,12 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
             p.private_thoughts.append(response.thought)
             break
             
-    updates: Dict[str, Any] = {"players": updated_players}
+    updates: Dict[str, Any] = {
+        "players": updated_players,
+        "last_thought": response.thought,
+        "last_action": response.action if hasattr(response, 'action') else (response.action_type if hasattr(response, 'action_type') else None),
+        "last_target": response.target_id if hasattr(response, 'target_id') else None
+    }
     
     if phase == "night" or turn_type == "hunter_shoot":
         updates["night_actions"] = {**state["night_actions"], turn_type: response.target_id}

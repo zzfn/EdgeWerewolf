@@ -1,6 +1,20 @@
+import os
 from typing import Dict, List, Any, Optional, Literal
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableConfig
 from src.agent.state import GameState, Message
+
+# 加载环境变量
+load_dotenv()
+
+# 初始化用于总结的 LLM
+summarizer_llm = ChatOpenAI(
+    model="deepseek-chat", 
+    openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
+    openai_api_base="https://api.deepseek.com/v1",
+    temperature=0.3 # 总结需要低随机性
+)
 
 def game_master_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]:
     """
@@ -197,12 +211,21 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
                         pass
                     elif state.get("hunter_can_shoot"):
                         pending_hunter = p.id
-                
+        
+        # 提炼对局总结 (长期记忆)
+        history_str = "\n".join([f"【玩家 {m.player_id}】: {m.content}" if m.player_id else f"【系统】: {m.content}" for m in state["history"][-30:]])
+        summary_prompt = f"请作为狼人杀上帝，对目前的对局进行极简总结（100字以内）。\n原有总结：{state.get('game_summary','')}\n最新进展：{history_str}\n请更新总结，重点记录谁死了、谁跳了身份、场上核心矛盾点。"
+        try:
+            new_summary = summarizer_llm.invoke(summary_prompt).content
+        except Exception:
+            new_summary = state.get("game_summary", "对局进行中...")
+
         return {
             "players": updated_players,
             "alive_players": new_alive,
             "last_night_dead": list(dead_ids),
             "pending_hunter_shoot": pending_hunter,
+            "game_summary": new_summary,
             "phase": "day",
             "turn_type": "day_announcement",
             "night_actions": {},

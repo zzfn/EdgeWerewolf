@@ -56,5 +56,6 @@ workflow.add_conditional_edges(
     }
 )
 
-# 编译并设置默认配置
+# 导出 workflow 用于 main.py 灵活编译，导出 graph 用于 langgraph dev
+# 注意：在 Studio 环境下，Studio 会自动处理持久化，不需要显式注入 checkpointer
 graph = workflow.compile().with_config({"recursion_limit": 100})

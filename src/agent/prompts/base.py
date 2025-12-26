@@ -10,6 +10,8 @@ BASE_SYSTEM_PROMPT = """你正在参加一场经典的 12 人狼人杀游戏。
 ### 你的角色信息：
 - 角色：{role}
 - ID：{player_id}
+- 性格标签：{personality}
+- 发言风格：{style}
 
 {role_specific_instructions}
 

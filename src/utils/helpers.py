@@ -14,12 +14,18 @@ def get_default_state() -> GameState:
     # 随机打乱身份
     random.shuffle(roles)
     
+    # 定义个性和风格池，用于增加 AI 的多样性
+    personalities = ["逻辑严密", "直觉敏锐", "谨慎稳重", "容易冲动", "深沉冷静", "言语犀利", "温和中立", "富有正义感", "多疑狡黠", "随和跟风"]
+    styles = ["简明扼要，直指核心", "富有煽动性，擅长带动情绪", "爱讲冷笑话，语气幽默", "说话文绉绉，逻辑性极强", "语气坚定，不容怀疑", "谦逊低调，多用疑问句", "直白坦诚，不绕弯子", "喜欢复述他人观点并进行补充", "神秘莫测，话里有话", "积极表现，语速较快"]
+
     players = []
     for i, role in enumerate(roles):
         players.append(PlayerState(
             id=i + 1,
             role=role,
             is_alive=True,
+            personality=random.choice(personalities),
+            style=random.choice(styles),
             private_history=[],
             private_thoughts=[]
         ))
@@ -33,6 +39,7 @@ def get_default_state() -> GameState:
         "current_player_id": None, 
         "discussion_queue": [],
         "history": [],
+        "game_summary": "游戏刚刚开始，暂无历史总结。",
         "night_actions": {},
         "votes": {},
         "witch_potions": {"save": True, "poison": True},
