@@ -14,6 +14,9 @@ from src.agent.prompts.base import (
     WITCH_INSTRUCTIONS,
     HUNTER_INSTRUCTIONS,
     GUARD_INSTRUCTIONS,
+    SHERIFF_NOMINATION_INSTRUCTIONS,
+    SHERIFF_DISCUSSION_INSTRUCTIONS,
+    SHERIFF_VOTING_INSTRUCTIONS,
 )
 from dotenv import load_dotenv
 from langfuse.langchain import CallbackHandler
@@ -30,33 +33,42 @@ llm = ChatOpenAI(
 )
 
 def get_role_instructions(player: PlayerState, state: GameState) -> str:
-    """根据角色生成特定的指令"""
+    
+    # 基础角色指令
     role = player.role
     if role == "werewolf":
         teammates = [str(p.id) for p in state["players"] if p.role == "werewolf" and p.id != player.id]
-        return WOLF_INSTRUCTIONS.format(teammates=", ".join(teammates))
+        instructions = WOLF_INSTRUCTIONS.format(teammates=", ".join(teammates))
     elif role == "villager":
-        return VILLAGER_INSTRUCTIONS
+        instructions = VILLAGER_INSTRUCTIONS
     elif role == "seer":
         history_msgs = [m.content for m in player.private_history if m.role == "system"]
         check_history = "\n - " + "\n - ".join(history_msgs) if history_msgs else "暂无记录"
-        return SEER_INSTRUCTIONS.format(check_history=check_history)
+        instructions = SEER_INSTRUCTIONS.format(check_history=check_history)
     elif role == "witch":
         p = state["witch_potions"]
         save_status = "【可用】" if p.get("save") else "【已用完】"
         clock_status = "【可用】" if p.get("poison") else "【已用完】"
         status_str = f"解药：{save_status}, 毒药：{clock_status}"
         
-        # 补充被杀信息
         killed_id = state.get("night_actions", {}).get("wolf_kill")
-        killed_info = f"昨晚被狼人击杀的是：{killed_id}号玩家 (如果你想救他，请填写该 ID)" if killed_id is not None else "昨晚没有人被狼人击杀。"
-        
-        return WITCH_INSTRUCTIONS.format(potions_status=status_str, killed_info=killed_info)
+        killed_info = f"昨晚被狼人击杀的是：{killed_id}号玩家" if killed_id is not None else "昨晚没有人被狼人击杀。"
+        instructions = WITCH_INSTRUCTIONS.format(potions_status=status_str, killed_info=killed_info)
     elif role == "hunter":
-        return HUNTER_INSTRUCTIONS
+        instructions = HUNTER_INSTRUCTIONS
     elif role == "guard":
-        return GUARD_INSTRUCTIONS
-    return ""
+        instructions = GUARD_INSTRUCTIONS
+    
+    # 追加环节特定指令
+    turn_type = state["turn_type"]
+    if turn_type == "sheriff_nomination":
+        instructions += "\n\n" + SHERIFF_NOMINATION_INSTRUCTIONS
+    elif turn_type == "sheriff_discussion":
+        instructions += "\n\n" + SHERIFF_DISCUSSION_INSTRUCTIONS
+    elif turn_type == "sheriff_voting":
+        instructions += "\n\n" + SHERIFF_VOTING_INSTRUCTIONS
+        
+    return instructions
 
 def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]:
     """
@@ -102,13 +114,36 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
     # Langfuse 局部观测
     langfuse_handler = CallbackHandler()
     
+    # 翻译环节名称，减少 AI 混淆
+    type_map = {
+        "night": "夜晚",
+        "day": "白天",
+        "wolf_kill": "狼人杀人",
+        "seer_check": "预言家验人",
+        "witch_action": "女巫行动",
+        "guard_action": "守卫行动",
+        "day_announcement": "天亮公告",
+        "sheriff_nomination": "警长竞选报名",
+        "sheriff_discussion": "警长竞选发言",
+        "sheriff_voting": "警长投票",
+        "sheriff_settle": "警长产生结果公布",
+        "discussion": "自由发言",
+        "voting": "处决投票",
+        "voting_settle": "处决结果公布",
+        "last_words": "发表遗言",
+        "pk_discussion": "PK发言",
+        "pk_voting": "PK投票"
+    }
+    cn_phase = type_map.get(phase, phase)
+    cn_turn_type = type_map.get(turn_type, turn_type)
+
     # 执行调用
     chain = prompt | structured_llm
     try:
         response = chain.invoke({
             "system_instructions": sys_prompt,
-            "phase": phase,
-            "turn_type": turn_type,
+            "phase": cn_phase,
+            "turn_type": cn_turn_type,
             "game_summary": state.get("game_summary", ""),
             "history": history_str,
             "private_thoughts": private_thoughts_str
@@ -125,56 +160,56 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
             response = AgentOutput(thought="思考中...", speech="我暂时没有什么想说的。", action=None, target_id=None)
     
     # 更新 Player 私有状态
-    updated_players = state["players"]
-    for p in updated_players:
-        if p.id == current_id:
-            p.private_thoughts.append(response.thought)
-            break
+    # 为了并行合并，只返回被修改的玩家对象
+    current_player = next(p for p in state["players"] if p.id == current_id)
+    # 使用 model_copy 确保在并行环境下状态隔离
+    new_player = current_player.model_copy(deep=True)
+    new_player.private_thoughts.append(response.thought)
             
     updates: Dict[str, Any] = {
-        "players": updated_players,
+        "players": [new_player],
         "last_thought": response.thought,
         "last_action": response.action if hasattr(response, 'action') else (response.action_type if hasattr(response, 'action_type') else None),
         "last_target": response.target_id if hasattr(response, 'target_id') else None
     }
     
     if phase == "night" or turn_type == "hunter_shoot":
-        updates["night_actions"] = {**state["night_actions"], turn_type: response.target_id}
+        updates["night_actions"] = {turn_type: response.target_id}
     elif turn_type == "sheriff_transfer":
         # 复用 night_actions 存储移交决策
         target = response.target_id if response.action_type == "transfer_badge" else None
-        updates["night_actions"] = {**state["night_actions"], "sheriff_transfer": target}
+        updates["night_actions"] = {"sheriff_transfer": target}
     else:
-        # 白天发言
-        if response.speech:
+        # 白天发言 (仅在非并行环节且有发言内容时记录)
+        # 并行环节（如投票、上警报名）仅执行决策和内心思考，不产生公屏发言
+        parallel_types = ["voting", "pk_voting", "sheriff_nomination", "sheriff_voting"]
+        if response.speech and turn_type not in parallel_types:
             msg = Message(role=player.role, content=response.speech, player_id=player.id)
             updates["history"] = [msg] 
         
         # 处理投票 (含 PK 投票)
         if turn_type in ["voting", "pk_voting"]:
             target_id = response.target_id if hasattr(response, 'target_id') else None
-            updates["votes"] = {**state["votes"], player.id: target_id}
+            updates["votes"] = {player.id: target_id}
 
         # 处理警长竞选
         if turn_type == "sheriff_nomination":
-            current_candidates = list(state.get("election_candidates", []))
             if response.action == "run":
-                if player.id not in current_candidates:
-                    current_candidates.append(player.id)
+                updates["election_candidates"] = [player.id]
             elif response.action == "quit_election":
-                if player.id in current_candidates:
-                    current_candidates.remove(player.id)
-                    msg = Message(role="system", content=f"【系统公告】玩家 {player.id} 宣布退水，退出警长竞选。")
-                    if "history" in updates:
-                        updates["history"].append(msg)
-                    else:
-                        updates["history"] = [msg]
-            updates["election_candidates"] = current_candidates
+                # 退水逻辑在并行阶段通常不适用，除非是后续环节
+                # 这里简单处理：如果确实触发了，则在 history 中体现，GM 会处理
+                msg = Message(role="system", content=f"【系统公告】玩家 {player.id} 宣布退水，退出警长竞选。")
+                if "history" in updates:
+                    updates["history"].append(msg)
+                else:
+                    updates["history"] = [msg]
+                # 注意：并行环境下从 list 移除比较麻烦，通常是通过 GM 在 settle 时判定
 
         # 处理投警长
         if turn_type == "sheriff_voting":
             target_id = response.target_id if hasattr(response, 'target_id') else None
-            updates["votes"] = {**state["votes"], player.id: target_id}
+            updates["votes"] = {player.id: target_id}
 
         # 处理发言顺序指定 (警长权力)
         if turn_type == "discussion" and player.id == state.get("sheriff_id"):

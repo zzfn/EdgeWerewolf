@@ -20,6 +20,10 @@ def game_master_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]
     """
     逻辑中心 (GM)：硬编码。
     """
+    # 0. 基础清理：如果当前状态中有并行的残留，先尝试清理标记
+    # 但由于 GM 需要判定下一步，我们可以在返回 updates 时统一处理
+    updates = {}
+    
     # 1. 判定胜负
     players = state["players"]
     alive_ids = state["alive_players"]
@@ -49,7 +53,7 @@ def game_master_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]
         if state.get("current_player_id") is None:
             new_list = list(state["pending_last_words"])
             next_id = new_list.pop(0)
-            return {"current_player_id": next_id, "pending_last_words": new_list}
+            return {"current_player_id": next_id, "pending_last_words": new_list, "parallel_player_ids": None}
         else:
             # 当前玩家说完遗言了（由 action_handler 触发流转到这里，或者 player_agent 返回了）
             # 这里的流转由 action_handler 触发，或者在 player_agent 结束后回到 GM
@@ -58,21 +62,34 @@ def game_master_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]
     # B. 警徽移交环节 (仅警长死亡时)
     if turn_type == "sheriff_transfer" and state.get("pending_sheriff_transfer"):
         if state.get("current_player_id") != state.get("sheriff_id"):
-            return {"current_player_id": state.get("sheriff_id")}
+            return {"current_player_id": state.get("sheriff_id"), "parallel_player_ids": None}
 
     # C. 猎人反击环节
     if turn_type == "hunter_shoot" and state.get("pending_hunter_shoot"):
         if state.get("current_player_id") != state["pending_hunter_shoot"]:
-            return {"current_player_id": state["pending_hunter_shoot"]}
+            return {"current_player_id": state["pending_hunter_shoot"], "parallel_player_ids": None}
 
-    # D. 通用点名/队列逻辑 (讨论、投票、报名)
-    q_types = ["discussion", "voting", "sheriff_nomination", "sheriff_voting", "pk_discussion", "pk_voting"]
+    # D. 并行阶段判定 (处决投票、警长投票、上警报名)
+    # 注意：PK 讨论完进 PK 投票也是并行的
+    parallel_types = ["voting", "pk_voting", "sheriff_nomination", "sheriff_voting"]
+    if turn_type in parallel_types and state.get("discussion_queue"):
+        # 如果队列中有成员，且是并行环节，直接全量并行
+        p_ids = list(state["discussion_queue"])
+        return {
+            "parallel_player_ids": p_ids,
+            "discussion_queue": [], # 清空队列，表示已派发
+            "current_player_id": None
+        }
+
+    # E. 通用点名/队列逻辑 (自由讨论、PK 讨论、上警发言)
+    q_types = ["discussion", "pk_discussion", "sheriff_discussion"]
     if turn_type in q_types and state.get("discussion_queue"):
         new_queue = list(state["discussion_queue"])
         next_id = new_queue.pop(0)
         return {
             "discussion_queue": new_queue, 
-            "current_player_id": next_id
+            "current_player_id": next_id,
+            "parallel_player_ids": None
         }
 
     # --- 环节自动推进逻辑 (状态机入口) ---
@@ -114,7 +131,8 @@ def game_master_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]
             return {
                 "turn_type": "discussion", 
                 "discussion_queue": get_ordered_queue(state),
-                "current_player_id": None 
+                "current_player_id": None,
+                "parallel_player_ids": None 
             }
         
         elif turn_type == "last_words":
@@ -145,12 +163,20 @@ def game_master_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]
             return {"turn_type": "discussion", "discussion_queue": get_ordered_queue(state), "current_player_id": None}
 
         elif turn_type == "sheriff_nomination" and not state["discussion_queue"]:
-            candidates = state.get("election_candidates", [])
+            candidates = sorted(state.get("election_candidates", []))
             if not candidates:
-                return {"turn_type": "discussion", "discussion_queue": sorted(state["alive_players"]), "current_player_id": None}
+                # 无人竞选，直接进公告天亮
+                return {"turn_type": "day_announcement", "current_player_id": None, "parallel_player_ids": None}
+            # 有人竞选，进入上警发言环节（串行）
+            return {"turn_type": "sheriff_discussion", "discussion_queue": candidates, "current_player_id": None, "parallel_player_ids": None}
+            
+        elif turn_type == "sheriff_discussion" and not state["discussion_queue"]:
+            # 发言结束，由非上警玩家投票（并行）
+            candidates = state.get("election_candidates", [])
             voters = [p_id for p_id in state["alive_players"] if p_id not in candidates]
             if not voters:
-                return {"turn_type": "discussion", "discussion_queue": sorted(state["alive_players"]), "current_player_id": None}
+                # 极端情况：全员上警，全部退水或某种逻辑错误，这里兜底
+                return {"turn_type": "sheriff_settle", "current_player_id": None}
             return {"turn_type": "sheriff_voting", "discussion_queue": sorted(voters), "current_player_id": None}
             
         elif turn_type == "sheriff_voting" and not state["discussion_queue"]:
@@ -213,7 +239,8 @@ def game_master_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]
                 "phase": "night",
                 "day_count": state["day_count"] + 1,
                 "turn_type": "guard_protect",
-                "current_player_id": None
+                "current_player_id": None,
+                "parallel_player_ids": None
             }
 
     return {}
@@ -272,7 +299,9 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
         
         for p in updated_players:
             if p.id in dead_ids:
-                p.is_alive = False
+                # 注意：此处不立即设置 p.is_alive = False，为了支持后续上警环节的隐秘死
+                # 在 day_announcement 时再统一应用
+                
                 # 猎人判定
                 if p.role == "hunter":
                     if p.id == witch_poison:
@@ -324,14 +353,33 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
             "game_summary": new_summary,
             "phase": "day",
             "turn_type": "sheriff_nomination" if state["day_count"] == 1 and state.get("sheriff_id") is None else "day_announcement",
+            "discussion_queue": sorted(state["alive_players"]) if state["day_count"] == 1 and state.get("sheriff_id") is None else [],
             "night_actions": {},
-            "votes": {}
+            "votes": {},
+            "parallel_player_ids": None
         }
         
     if turn_type == "day_announcement":
-        dead_info = "平安夜" if not state["last_night_dead"] else f"玩家 {', '.join(map(str, state['last_night_dead']))} 死亡"
+        dead_ids = state.get("last_night_dead", [])
+        
+        # 应用死亡状态更新 (重要：这里才是真正结算生死的地方)
+        updated_players = state["players"]
+        new_alive = list(state["alive_players"])
+        for p in updated_players:
+            if p.id in dead_ids:
+                p.is_alive = False
+                if p.id in new_alive:
+                    new_alive.remove(p.id)
+        
+        dead_info = "平安夜" if not dead_ids else f"玩家 {', '.join(map(str, dead_ids))} 死亡"
         msg = Message(role="system", content=f"【上帝公告】第{state['day_count']}天。昨晚是{dead_info}。")
-        return {"history": [msg]}
+        
+        return {
+            "history": [msg],
+            "players": updated_players,
+            "alive_players": sorted(new_alive),
+            "last_night_dead": [] # 清空本轮死亡记录
+        }
 
     if turn_type == "sheriff_settle":
         votes = state.get("votes", {})

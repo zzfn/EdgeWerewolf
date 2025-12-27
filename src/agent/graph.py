@@ -12,19 +12,27 @@ def init_node(state: GameState, config: RunnableConfig) -> GameState:
         return get_default_state()
     return state
 
+from langgraph.constants import Send
+
 def routing_logic(state: GameState):
     """
     中控路由逻辑 (GM 的指挥棒)。
     """
     if state.get("game_over"):
         return END
+    
+    # 并行调度逻辑
+    parallel_ids = state.get("parallel_player_ids")
+    if parallel_ids and state.get("current_player_id") is None:
+        # 使用 Send 并行触发多个 player_agent
+        return [Send("player_agent", {**state, "current_player_id": p_id, "parallel_player_ids": None}) for p_id in parallel_ids]
         
     turn_type = state.get("turn_type")
     current_id = state.get("current_player_id")
     
     if current_id is not None:
         return "player_agent"
-        
+    
     if turn_type in ["night_settle", "day_announcement", "sheriff_settle", "voting_settle", "execution_announcement", "hunter_announcement"]:
         return "action_handler"
         

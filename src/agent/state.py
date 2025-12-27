@@ -15,9 +15,26 @@ class PlayerState(BaseModel):
     private_history: List[Message] = Field(default_factory=list)
     private_thoughts: List[str] = Field(default_factory=list)
 
+def merge_dict(left: Dict[Any, Any], right: Dict[Any, Any]) -> Dict[Any, Any]:
+    """合并字典的 Reducer"""
+    new_dict = left.copy()
+    new_dict.update(right)
+    return new_dict
+
+def merge_players(left: List[PlayerState], right: List[PlayerState]) -> List[PlayerState]:
+    """合并玩家列表的 Reducer，根据 ID 覆盖更新"""
+    player_map = {p.id: p for p in left}
+    for p in right:
+        player_map[p.id] = p
+    return sorted(list(player_map.values()), key=lambda x: x.id)
+
+def merge_list(left: List[Any], right: List[Any]) -> List[Any]:
+    """合并列表的 Reducer（去重并合并）"""
+    return list(set(left) | set(right))
+
 class GameState(TypedDict):
     # 基础信息
-    players: List[PlayerState]
+    players: Annotated[List[PlayerState], merge_players]
     alive_players: List[int]
     
     # 流程控制 (GM 控制点)
@@ -25,6 +42,7 @@ class GameState(TypedDict):
     turn_type: str            # "guard_protect", "wolf_kill", "seer_check", "witch_action", "discussion", "voting"
     discussion_queue: List[int]
     current_player_id: Optional[int]
+    parallel_player_ids: Optional[List[int]] # 用于并行调度的 ID 列表
     day_count: int
     
     # 公共信息 (追加模式)
@@ -32,8 +50,8 @@ class GameState(TypedDict):
     game_summary: str  # 对局总结（长期记忆）
     
     # 临时决策数据 (Action 消费点)
-    night_actions: Dict[str, Any] # {"wolf_kill": 5, ...}
-    votes: Dict[int, int]         # {投票者ID: 被投者ID}
+    night_actions: Annotated[Dict[str, Any], merge_dict] # {"wolf_kill": 5, ...}
+    votes: Annotated[Dict[int, int], merge_dict]         # {投票者ID: 被投者ID}
     
     # 角色特殊状态 (由 Action 控制)
     witch_potions: Dict[str, bool] # {"save": True, "poison": True}
@@ -47,13 +65,14 @@ class GameState(TypedDict):
     pending_hunter_shoot: Optional[int]
     pending_last_words: List[int]          # 等待发表遗言的玩家 ID 列表
     pending_sheriff_transfer: bool        # 是否处于警徽移交环节
-    pk_candidates: List[int]               # PK 环节的候选人列表
+    pk_candidates: Annotated[List[int], merge_list]               # PK 环节的候选人列表
     speech_order_preference: Optional[Literal["clockwise", "counter_clockwise"]] # 警长指定的发言顺序
-    election_candidates: List[int]
+    election_candidates: Annotated[List[int], merge_list]
     game_over: bool
     winner_side: Optional[Literal["werewolf", "villager"]]
     
     # 上帝视角增强字段 (非对局核心状态，仅用于可视化显示)
-    last_thought: Optional[str]
-    last_action: Optional[str]
-    last_target: Optional[int]
+    # 并行环节下，我们使用 lambda x, y: y 来允许覆盖而不报错（只取并行中最后一个完成的）
+    last_thought: Annotated[Optional[str], lambda x, y: y]
+    last_action: Annotated[Optional[str], lambda x, y: y]
+    last_target: Annotated[Optional[int], lambda x, y: y]
