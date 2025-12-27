@@ -11,6 +11,7 @@ class Message(BaseModel):
 class PlayerState(BaseModel):
     id: int
     role: str  # werewolf, villager, seer, witch, hunter, guard
+    personality: Optional[str] = None # 玩家性格特点
     is_alive: bool = True
     private_history: List[Message] = Field(default_factory=list)
     private_thoughts: List[str] = Field(default_factory=list)

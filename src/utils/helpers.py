@@ -1,5 +1,4 @@
 import random
-from typing import List
 from src.agent.state import PlayerState, GameState
 
 def get_default_state() -> GameState:
@@ -15,11 +14,22 @@ def get_default_state() -> GameState:
     random.shuffle(roles)
     
 
+    # 定义可选的性格特质
+    personalities = [
+        "逻辑严密、冷静分析票型，不容易被煽动",
+        "直觉敏锐、关注发言者的语气细节，敢于质疑",
+        "激进博弈、倾向于带节奏进行对抗，不怕被针对",
+        "稳健慎重、在信息不足时倾向于保守观察，不轻易站边",
+        "强势领导、喜欢作为警长带队，对不一致的逻辑零容忍",
+        "感性共情、容易信任表态诚恳的玩家，但也可能被欺骗"
+    ]
+
     players = []
     for i, role in enumerate(roles):
         players.append(PlayerState(
             id=i + 1,
             role=role,
+            personality=random.choice(personalities),
             is_alive=True,
             private_history=[],
             private_thoughts=[]

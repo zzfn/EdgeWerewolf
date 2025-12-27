@@ -1,6 +1,5 @@
 import os
-from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
@@ -88,6 +87,7 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
     sys_prompt = BASE_SYSTEM_PROMPT.format(
         role=player.role,
         player_id=player.id,
+        personality=player.personality or "理性思考",
         role_specific_instructions=role_instr
     )
     
