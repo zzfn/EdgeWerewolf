@@ -61,6 +61,7 @@ class GameState(TypedDict):
     # 判定结果 (由 GM/Action 更新)
     last_night_dead: List[int]
     last_execution_id: Optional[int]
+    last_transfer_target: Optional[int]
     sheriff_id: Optional[int]
     pending_hunter_shoot: Optional[int]
     pending_last_words: List[int]          # 等待发表遗言的玩家 ID 列表
