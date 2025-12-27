@@ -4,33 +4,6 @@ from pydantic import BaseModel, Field
 import operator
 from pydantic import BaseModel, Field
 
-class RoleClaim(BaseModel):
-    player_id: int
-    role: str
-    day: int
-    claimed_content: str
-
-class EventRecord(BaseModel):
-    day: int
-    phase: str
-    description: str
-
-class VotingSummary(BaseModel):
-    day: int
-    turn_type: str
-    details: str
-
-class GameSummary(BaseModel):
-    role_claims: List[RoleClaim] = Field(default_factory=list)
-    major_events: List[EventRecord] = Field(default_factory=list)
-    voting_records: List[VotingSummary] = Field(default_factory=list)
-    key_suspicions: List[str] = Field(default_factory=list) # 关键怀疑关系：如“1号怀疑2号是狼”
-    game_progress: str = "" # 对局整体进程的极简描述
-
-def merge_summary(left: GameSummary, right: GameSummary) -> GameSummary:
-    """对于总结，我们通常采取全量覆盖或者智能合并，这里简单化处理：新的直接覆盖旧的，因为总结节点会读取旧的数据"""
-    return right
-
 class Message(BaseModel):
     role: str
     content: str
@@ -76,7 +49,7 @@ class GameState(TypedDict):
     
     # 公共信息 (追加模式)
     history: Annotated[List[Message], operator.add]
-    game_summary: Annotated[GameSummary, merge_summary]  # 结构化对局总结（长期记忆）
+    game_summary: str  # 对局总结（长期记忆）
     
     # 临时决策数据 (Action 消费点)
     night_actions: Annotated[Dict[str, Any], merge_dict] # {"wolf_kill": 5, ...}

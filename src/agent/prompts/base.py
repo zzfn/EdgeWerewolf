@@ -65,4 +65,4 @@ SHERIFF_DISCUSSION_INSTRUCTIONS = """现在是【警长竞选发言】环节。�
 
 SHERIFF_VOTING_INSTRUCTIONS = """现在是【警长投票】环节。
 - 目标：从竞选者中选出你信任的警长。
-- 要求：极简思考，根据竞选发言决定投给谁（`target_id`）或弃票。禁止发言。"""
+- 要求：极简思考，根据竞选发言决定投给谁（`target_id`）。禁止发言。"""

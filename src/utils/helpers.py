@@ -44,13 +44,7 @@ def get_default_state() -> GameState:
         "current_player_id": None, 
         "discussion_queue": [],
         "history": [],
-        "game_summary": {
-            "role_claims": [],
-            "major_events": [],
-            "voting_records": [],
-            "key_suspicions": [],
-            "game_progress": "游戏刚刚开始"
-        },
+        "game_summary": "游戏刚刚开始，暂无历史总结。",
         "night_actions": {},
         "votes": {},
         "witch_potions": {"save": True, "poison": True},

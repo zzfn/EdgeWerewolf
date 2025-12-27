@@ -4,7 +4,7 @@ from typing import Dict, List, Any, Optional, Literal
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableConfig
-from src.agent.state import GameState, Message, GameSummary
+from src.agent.state import GameState, Message
 
 # 加载环境变量
 load_dotenv()
@@ -380,6 +380,14 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
                 if p.id == state.get("sheriff_id"):
                     pending_sheriff_transfer = True
         
+        # 自动总结逻辑 (简易版)
+        history_str = "\n".join([f"【玩家 {m.player_id}】: {m.content}" if m.player_id else f"【系统】: {m.content}" for m in state["history"][-20:]])
+        summary_prompt = f"请用50字以内总结当前对局的关键事实（谁跳了什么，谁死了）：\n原有总结：{state.get('game_summary','')}\n最新进展：\n{history_str}"
+        try:
+            new_summary = summarizer_llm.invoke(summary_prompt).content
+        except:
+            new_summary = state.get("game_summary", "")
+
         # --- 优化：首日上警自动化 ---
         if state["day_count"] == 1 and state.get("sheriff_id") is None:
             # 固定第一名存活狼人（悍跳）和预言家
@@ -404,6 +412,7 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
                 "discussion_queue": sorted(candidates),
                 "night_actions": {},
                 "votes": {},
+                "game_summary": new_summary,
                 "parallel_player_ids": None
             }
 
@@ -415,6 +424,7 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
             "pending_last_words": sorted(pending_last_words),
             "pending_sheriff_transfer": pending_sheriff_transfer,
             "phase": "day",
+            "game_summary": new_summary,
             "turn_type": "sheriff_nomination" if state["day_count"] == 1 and state.get("sheriff_id") is None else "day_announcement",
             "discussion_queue": sorted(state["alive_players"]) if state["day_count"] == 1 and state.get("sheriff_id") is None else [],
             "night_actions": {},
@@ -627,40 +637,5 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
             return {"players": updated_players}
 
 
-def summarizer_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]:
-    """
-    结构化总结节点：负责维护对局的结构化 JSON 总结。
-    """
-    # 使用 structured output 确保输出符合 GameSummary 模型
-    structured_summarizer = summarizer_llm.with_structured_output(GameSummary)
-    
-    # 构造历史背景
-    recent_history = state["history"][-50:] # 取最近50条记录
-    history_str = "\n".join([f"【玩家 {m.player_id}】: {m.content}" if m.player_id else f"【系统公告】: {m.content}" for m in recent_history])
-    
-    current_summary = state.get("game_summary")
-    
-    prompt = (
-        "你是一个专业的狼人杀对局记录员。请根据历史记录更新当前的结构化总结。\n"
-        "### 任务目标：\n"
-        "1. **身份起跳 (role_claims)**：记录谁在什么时候声称自己是什么身份。注意记录原文摘要。\n"
-        "2. **重大事件 (major_events)**：记录死亡、开枪、移交警徽等关键进程。\n"
-        "3. **投票记录 (voting_records)**：记录每一轮重要的投票结果和票型详情。\n"
-        "4. **关键怀疑 (key_suspicions)**：提炼玩家之间的攻击和怀疑关系，如“A 认为 B 发言有狼味”。\n"
-        "5. **整体进度 (game_progress)**：用一句话概括当前局势。\n\n"
-        "### 严格准则：\n"
-        "- **仅记录事实**：只记录玩家说了什么，不预测玩家真实的身份。\n"
-        "- **去冗余**：保留核心逻辑，剔除废话。\n"
-        "- **增量更新**：在原有总结基础上补充最新进展。\n\n"
-        f"### 当前结构化总结：\n{current_summary.model_dump_json(indent=2) if hasattr(current_summary, 'model_dump_json') else current_summary}\n\n"
-        f"### 最新历史记录：\n{history_str}\n"
-    )
-    
-    try:
-        new_summary = structured_summarizer.invoke(prompt)
-        return {"game_summary": new_summary}
-    except Exception as e:
-        print(f"Summarizer error: {e}")
-        return {}
             
 

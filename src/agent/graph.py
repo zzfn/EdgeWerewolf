@@ -2,7 +2,7 @@ from typing import Literal, Union
 from langgraph.graph import StateGraph, END, START
 from langchain_core.runnables import RunnableConfig
 from src.agent.state import GameState
-from src.agent.nodes.engine import game_master_node, action_handler_node, summarizer_node
+from src.agent.nodes.engine import game_master_node, action_handler_node
 from src.agent.nodes.roles import player_agent_node
 from src.utils.helpers import get_default_state
 
@@ -51,14 +51,12 @@ workflow.add_node("init", init_node)
 workflow.add_node("game_master", game_master_node)
 workflow.add_node("player_agent", player_agent_node)
 workflow.add_node("action_handler", action_handler_node)
-workflow.add_node("summarizer", summarizer_node)
 
 # 设置边
 workflow.add_edge(START, "init")
 workflow.add_edge("init", "game_master")
 workflow.add_edge("player_agent", "game_master")
-workflow.add_edge("action_handler", "summarizer")
-workflow.add_edge("summarizer", "game_master")
+workflow.add_edge("action_handler", "game_master")
 
 workflow.add_conditional_edges(
     "game_master",
