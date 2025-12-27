@@ -12,8 +12,6 @@ class PlayerState(BaseModel):
     id: int
     role: str  # werewolf, villager, seer, witch, hunter, guard
     is_alive: bool = True
-    personality: str = "" # 性格设定：如“逻辑严密”、“容易冲动”、“深沉冷静”
-    style: str = ""       # 发言风格：如“简明扼要”、“富有煽动性”、“爱讲冷笑话”
     private_history: List[Message] = Field(default_factory=list)
     private_thoughts: List[str] = Field(default_factory=list)
 

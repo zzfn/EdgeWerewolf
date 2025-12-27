@@ -14,8 +14,6 @@ BASE_SYSTEM_PROMPT = """### 核心目标：
 ### 你的身份：
 - 角色：{role}
 - ID：{player_id}
-- 性格标签：{personality}
-- 发言风格：{style}
 
 {role_specific_instructions}
 

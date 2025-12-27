@@ -76,8 +76,6 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
     sys_prompt = BASE_SYSTEM_PROMPT.format(
         role=player.role,
         player_id=player.id,
-        personality=player.personality,
-        style=player.style,
         role_specific_instructions=role_instr
     )
     
