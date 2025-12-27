@@ -2,7 +2,7 @@ from typing import Literal, Union
 from langgraph.graph import StateGraph, END, START
 from langchain_core.runnables import RunnableConfig
 from src.agent.state import GameState
-from src.agent.nodes.engine import game_master_node, action_handler_node, announcer_node
+from src.agent.nodes.engine import game_master_node, action_handler_node, summarizer_node
 from src.agent.nodes.roles import player_agent_node
 from src.utils.helpers import get_default_state
 
@@ -33,22 +33,14 @@ def routing_logic(state: GameState):
     if current_id is not None:
         return "player_agent"
     
-    # 行动结算节点
-    action_types = ["night_settle", "day_announcement", "sheriff_settle", "voting_settle", "hunter_shoot", "sheriff_transfer"]
-    if turn_type in action_types:
+    # 行动结算与公告节点 (由 action_handler 统一处理)
+    action_or_announcement = [
+        "night_settle", "day_announcement", "sheriff_settle", "voting_settle", "hunter_shoot", "sheriff_transfer",
+        "sheriff_announcement", "voting_announcement", "execution_announcement", "hunter_announcement", "sheriff_transfer_announcement"
+    ]
+    if turn_type in action_or_announcement:
         return "action_handler"
     
-    # 公告节点
-    announcement_types = ["day_announcement", "sheriff_announcement", "voting_announcement", "execution_announcement", "hunter_announcement", "sheriff_transfer_announcement"]
-    if turn_type in announcement_types:
-        # 特殊处理：day_announcement 必须由 ActionHandler 先结算
-        if turn_type == "day_announcement":
-             if state.get("last_night_dead") and any(p.is_alive for p in state["players"] if p.id in state["last_night_dead"]):
-                  return "action_handler"
-        return "announcer"
-    
-    return "game_master"
-        
     return "game_master"
 
 # 构建图
@@ -59,14 +51,14 @@ workflow.add_node("init", init_node)
 workflow.add_node("game_master", game_master_node)
 workflow.add_node("player_agent", player_agent_node)
 workflow.add_node("action_handler", action_handler_node)
-workflow.add_node("announcer", announcer_node)
+workflow.add_node("summarizer", summarizer_node)
 
 # 设置边
 workflow.add_edge(START, "init")
 workflow.add_edge("init", "game_master")
 workflow.add_edge("player_agent", "game_master")
-workflow.add_edge("action_handler", "announcer") # 结算完后强制进一次公告
-workflow.add_edge("announcer", "game_master")
+workflow.add_edge("action_handler", "summarizer")
+workflow.add_edge("summarizer", "game_master")
 
 workflow.add_conditional_edges(
     "game_master",
@@ -74,7 +66,6 @@ workflow.add_conditional_edges(
     {
         "player_agent": "player_agent",
         "action_handler": "action_handler",
-        "announcer": "announcer",
         "game_master": "game_master",
         END: END
     }

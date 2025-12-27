@@ -137,6 +137,20 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
     cn_phase = type_map.get(phase, phase)
     cn_turn_type = type_map.get(turn_type, turn_type)
 
+    # 处理结构化总结 (GameSummary)
+    summary_obj = state.get("game_summary")
+    if hasattr(summary_obj, 'model_dump_json'):
+        # 将结构化数据转化为更易读的文本描述
+        summary_text = (
+            f"【整体进度】：{summary_obj.game_progress}\n"
+            f"【身份起跳】：\n" + "\n".join([f"- {c.day}天 {c.player_id}号声称是{c.role}: {c.claimed_content}" for c in summary_obj.role_claims]) + "\n"
+            f"【重大事件】：\n" + "\n".join([f"- {e.day}天 {e.phase}: {e.description}" for e in summary_obj.major_events]) + "\n"
+            f"【投票记录】：\n" + "\n".join([f"- {v.day}天 {v.turn_type}: {v.details}" for v in summary_obj.voting_records]) + "\n"
+            f"【关键怀疑】：\n" + "\n".join([f"- {s}" for s in summary_obj.key_suspicions])
+        )
+    else:
+        summary_text = str(summary_obj) if summary_obj else "暂无记录"
+
     # 执行调用
     chain = prompt | structured_llm
     try:
@@ -144,7 +158,7 @@ def player_agent_node(state: GameState, config: RunnableConfig) -> Dict[str, Any
             "system_instructions": sys_prompt,
             "phase": cn_phase,
             "turn_type": cn_turn_type,
-            "game_summary": state.get("game_summary", ""),
+            "game_summary": summary_text,
             "history": history_str,
             "private_thoughts": private_thoughts_str
         }, config={"callbacks": [langfuse_handler]})

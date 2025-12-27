@@ -4,7 +4,7 @@ from typing import Dict, List, Any, Optional, Literal
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.runnables import RunnableConfig
-from src.agent.state import GameState, Message
+from src.agent.state import GameState, Message, GameSummary
 
 # 加载环境变量
 load_dotenv()
@@ -380,32 +380,6 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
                 if p.id == state.get("sheriff_id"):
                     pending_sheriff_transfer = True
         
-        # 提炼对局总结 (长期记忆)
-        # 严格过滤：如果没有新的玩家发言，则不更新总结中关于“发言”的部分
-        recent_history = state["history"][-40:]
-        has_new_speech = any(m.player_id is not None for m in recent_history)
-        
-        if not has_new_speech and state.get("game_summary"):
-            # 如果没有新发言且已有总结，保持现状，仅追加死亡公告（如果需要）
-            new_summary = state["game_summary"]
-        else:
-            history_str = "\n".join([f"【玩家 {m.player_id}】: {m.content}" if m.player_id else f"【系统】: {m.content}" for m in recent_history])
-            summary_prompt = (
-                "你是一个狼人杀游戏的记录员。当前是第{day}天。请更新对局总结。\n"
-                f"原有总结：{state.get('game_summary','')}\n"
-                f"最新进展：\n{history_str}\n"
-                "【严格准则】：\n"
-                "1. **记录事实而非真相**：仅记录玩家的【公开言论】。例如：“1号玩家声称自己是预言家”，严禁写“1号玩家是预言家”。\n"
-                "2. **严禁幻觉**：如果最新进展中只有系统公告，请只更新死亡信息，不要碰发言总结。\n"
-                "3. **身份中立**：不管你私下知道什么，总结中禁止暗示谁真谁假，禁止记录任何未公开的私有信息。\n"
-                "4. **极简**：控制在80字以内。"
-            ).format(day=state['day_count'])
-            
-            try:
-                new_summary = summarizer_llm.invoke(summary_prompt).content
-            except Exception:
-                new_summary = state.get("game_summary", "对局进行中...")
-
         # --- 优化：首日上警自动化 ---
         if state["day_count"] == 1 and state.get("sheriff_id") is None:
             # 固定第一名存活狼人（悍跳）和预言家
@@ -424,7 +398,6 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
                 "pending_hunter_shoot": pending_hunter,
                 "pending_last_words": sorted(pending_last_words),
                 "pending_sheriff_transfer": pending_sheriff_transfer,
-                "game_summary": new_summary,
                 "phase": "day",
                 "election_candidates": sorted(candidates),
                 "turn_type": "sheriff_discussion", # 跳过 nomination 直接进 discussion
@@ -441,7 +414,6 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
             "pending_hunter_shoot": pending_hunter,
             "pending_last_words": sorted(pending_last_words),
             "pending_sheriff_transfer": pending_sheriff_transfer,
-            "game_summary": new_summary,
             "phase": "day",
             "turn_type": "sheriff_nomination" if state["day_count"] == 1 and state.get("sheriff_id") is None else "day_announcement",
             "discussion_queue": sorted(state["alive_players"]) if state["day_count"] == 1 and state.get("sheriff_id") is None else [],
@@ -462,10 +434,17 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
                 if p.id in new_alive:
                     new_alive.remove(p.id)
         
+        # 生成公告消息
+        dead_info = "平安夜" if not dead_ids else f"玩家 {', '.join(map(str, dead_ids))} 死亡"
+        content = f"【上帝公告】第{state['day_count']}天。昨晚是{dead_info}。"
+        msg = Message(role="system", content=content)
+        
         return {
             "players": updated_players,
             "alive_players": sorted(new_alive),
-            "turn_type": "day_announcement" # 结算完成后流转到公告
+            "last_night_dead": [], # 公告后清空
+            "history": [msg],
+            "turn_type": "day_announcement" 
         }
 
     if turn_type == "sheriff_settle":
@@ -489,24 +468,35 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
             if abstain: parts.append(f"{','.join(map(str, sorted(abstain)))} 弃票")
             vote_detail = "；".join(parts)
         
-        history_msg = Message(role="system", content=f"【系统公告】警长投票详情：{vote_detail}")
+        messages = [Message(role="system", content=f"【系统公告】警长投票详情：{vote_detail}")]
+        
+        updates = {"votes": {}, "pk_candidates": [], "turn_type": "sheriff_announcement"}
         
         if not counts:
             # 无人投票的情况下，从全员上警名单中随机选一个
             candidates = state.get("election_candidates", [])
             winner = random.choice(candidates) if candidates else None
-            return {"sheriff_id": winner, "votes": {}, "pk_candidates": [], "turn_type": "sheriff_announcement", "history": [history_msg]}
-            
-        max_votes = max(counts.values())
-        winners = [p_id for p_id, v in counts.items() if v == max_votes]
-        
-        if len(winners) == 1:
-            winner = winners[0]
-            return {"sheriff_id": winner, "votes": {}, "pk_candidates": [], "turn_type": "sheriff_announcement", "history": [history_msg]}
+            updates["sheriff_id"] = winner
         else:
-            # 平票处理：随机给一人，不再进入 PK
-            winner = random.choice(winners)
-            return {"sheriff_id": winner, "votes": {}, "pk_candidates": [], "turn_type": "sheriff_announcement", "history": [history_msg]}
+            max_votes = max(counts.values())
+            winners = [p_id for p_id, v in counts.items() if v == max_votes]
+            
+            if len(winners) == 1:
+                winner = winners[0]
+                updates["sheriff_id"] = winner
+            else:
+                # 平票处理：进入 PK 公告
+                updates["pk_candidates"] = winners
+                updates["sheriff_id"] = None
+
+        # 整合原本 announcer 的逻辑：产生结果公告
+        if updates.get("sheriff_id") is not None:
+            messages.append(Message(role="system", content=f"【上帝公告】玩家 {updates['sheriff_id']} 当选警长！"))
+        elif updates.get("pk_candidates"):
+            messages.append(Message(role="system", content=f"【上帝公告】警长竞选出现平票，玩家 {', '.join(map(str, updates['pk_candidates']))} 进入 PK 环节。"))
+            
+        updates["history"] = messages
+        return updates
 
     if turn_type == "voting_settle":
         votes = state.get("votes", {})
@@ -535,74 +525,77 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
             if abstain: parts.append(f"{','.join(map(str, sorted(abstain)))} 弃票")
             vote_detail = "；".join(parts)
         
-        history_msg = Message(role="system", content=f"【系统公告】处决投票详情：{vote_detail}")
+        messages = [Message(role="system", content=f"【系统公告】处决投票详情：{vote_detail}")]
+        
+        updates = {"votes": {}, "pk_candidates": [], "turn_type": "voting_announcement", "parallel_player_ids": None}
         
         if not counts:
-            # 无人投票的情况下切换
-            return {"last_execution_id": None, "votes": {}, "pk_candidates": [], "turn_type": "voting_announcement", "parallel_player_ids": None, "history": [history_msg]}
-            
-        max_votes = max(counts.values())
-        winners = [p_id for p_id in counts.keys() if counts[p_id] == max_votes]
-        
-        if len(winners) == 1:
-            winner = winners[0]
-            # 正常处决结算
-            updated_players = state["players"]
-            pending_hunter = None
-            pending_sheriff_transfer = False
-            for p in updated_players:
-                if p.id == winner:
-                    p.is_alive = False
-                    if p.role == "hunter" and state.get("hunter_can_shoot"):
-                        pending_hunter = p.id
-                    if p.id == state.get("sheriff_id"):
-                        pending_sheriff_transfer = True
-            
-            new_alive = [p_id for p_id in state["alive_players"] if p_id != winner]
-            return {
-                "players": updated_players,
-                "alive_players": new_alive,
-                "last_execution_id": winner,
-                "pending_hunter_shoot": pending_hunter,
-                "pending_last_words": [winner], 
-                "pending_sheriff_transfer": pending_sheriff_transfer,
-                "votes": {},
-                "pk_candidates": [],
-                "turn_type": "voting_announcement",
-                "parallel_player_ids": None,
-                "history": [history_msg]
-            }
+            # 无人投票
+            updates["last_execution_id"] = None
         else:
-            # 再次平票
-            return {"pk_candidates": winners, "votes": {}, "turn_type": "voting_announcement", "parallel_player_ids": None, "history": [history_msg]}
-        
+            max_votes = max(counts.values())
+            winners = [p_id for p_id in counts.keys() if counts[p_id] == max_votes]
+            
+            if len(winners) == 1:
+                winner = winners[0]
+                # 正常处决结算
+                updated_players = [p.model_copy(deep=True) for p in state["players"]]
+                pending_hunter = None
+                pending_sheriff_transfer = False
+                for p in updated_players:
+                    if p.id == winner:
+                        p.is_alive = False
+                        if p.role == "hunter" and state.get("hunter_can_shoot"):
+                            pending_hunter = p.id
+                        if p.id == state.get("sheriff_id"):
+                            pending_sheriff_transfer = True
+                
+                new_alive = [p_id for p_id in state["alive_players"] if p_id != winner]
+                updates.update({
+                    "players": updated_players,
+                    "alive_players": new_alive,
+                    "last_execution_id": winner,
+                    "pending_hunter_shoot": pending_hunter,
+                    "pending_last_words": [winner], 
+                    "pending_sheriff_transfer": pending_sheriff_transfer,
+                })
+            else:
+                # 平票处理
+                updates["pk_candidates"] = winners
+                messages.append(Message(role="system", content=f"【上帝公告】投票出现平票，玩家 {', '.join(map(str, winners))} 进入 PK 环节。"))
+
+        updates["history"] = messages
+        return updates
+
     if turn_type == "execution_announcement":
         target_id = state.get("last_execution_id")
         if target_id is not None:
-            msg = Message(role="system", content=f"【上帝公告】投票结束，玩家 {target_id} 被处决。")
+            content = f"【上帝公告】投票结束，玩家 {target_id} 被处决。"
         else:
-            msg = Message(role="system", content="【上帝公告】投票结束，平票或全员弃票，无人被处决。")
-        return {"history": [msg]}
+            content = "【上帝公告】投票结束，平票或全员弃票，无人被处决。"
+        return {"history": [Message(role="system", content=content)]}
 
     if turn_type == "hunter_announcement":
         shoot_target = state["night_actions"].get("hunter_shoot")
         if shoot_target:
-            updated_players = state["players"]
+            updated_players = [p.model_copy(deep=True) for p in state["players"]]
             for p in updated_players:
                 if p.id == shoot_target:
                     p.is_alive = False
             new_alive = [p_id for p_id in state["alive_players"] if p_id != shoot_target]
-            msg = Message(role="system", content=f"【上帝公告】猎人发动反击，玩家 {shoot_target} 被射杀！")
+            content = f"【上帝公告】猎人发动反击，玩家 {shoot_target} 被射杀！"
             return {
                 "players": updated_players,
-                "alive_players": new_alive,
-                "history": [msg], # 猎人开枪的消息比较特殊，此处保留
+                "alive_players": sorted(new_alive),
+                "history": [Message(role="system", content=content)],
                 "pending_hunter_shoot": None, 
                 "hunter_can_shoot": False,
                 "turn_type": "hunter_announcement"
             }
         else:
+            content = "【上帝公告】猎人选择放弃反击。"
             return {
+                "history": [Message(role="system", content=content)],
                 "pending_hunter_shoot": None,
                 "hunter_can_shoot": False,
                 "turn_type": "hunter_announcement"
@@ -610,10 +603,17 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
 
     if turn_type == "sheriff_transfer":
         transfer_target = state["night_actions"].get("sheriff_transfer")
+        updates = {"pending_sheriff_transfer": False, "last_transfer_target": transfer_target, "turn_type": "sheriff_transfer_announcement", "parallel_player_ids": None}
+        
         if transfer_target is not None:
-            return {"sheriff_id": transfer_target, "pending_sheriff_transfer": False, "last_transfer_target": transfer_target, "turn_type": "sheriff_transfer_announcement", "parallel_player_ids": None}
+            updates["sheriff_id"] = transfer_target
+            content = f"【上帝公告】原警长将警徽移交给玩家 {transfer_target}。"
         else:
-            return {"sheriff_id": None, "pending_sheriff_transfer": False, "last_transfer_target": None, "turn_type": "sheriff_transfer_announcement", "parallel_player_ids": None}
+            updates["sheriff_id"] = None
+            content = "【上帝公告】原警长选择撕掉警徽，本局后续将没有警长。"
+            
+        updates["history"] = [Message(role="system", content=content)]
+        return updates
 
     if turn_type == "seer_check":
         target_id = state["night_actions"].get("seer_check")
@@ -625,79 +625,42 @@ def action_handler_node(state: GameState, config: RunnableConfig) -> Dict[str, A
             msg = Message(role="system", content=f"查验反馈：{target_id}号玩家的身份是【{res}】。")
             seer.private_history.append(msg)
             return {"players": updated_players}
+
+
+def summarizer_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]:
+    """
+    结构化总结节点：负责维护对局的结构化 JSON 总结。
+    """
+    # 使用 structured output 确保输出符合 GameSummary 模型
+    structured_summarizer = summarizer_llm.with_structured_output(GameSummary)
+    
+    # 构造历史背景
+    recent_history = state["history"][-50:] # 取最近50条记录
+    history_str = "\n".join([f"【玩家 {m.player_id}】: {m.content}" if m.player_id else f"【系统公告】: {m.content}" for m in recent_history])
+    
+    current_summary = state.get("game_summary")
+    
+    prompt = (
+        "你是一个专业的狼人杀对局记录员。请根据历史记录更新当前的结构化总结。\n"
+        "### 任务目标：\n"
+        "1. **身份起跳 (role_claims)**：记录谁在什么时候声称自己是什么身份。注意记录原文摘要。\n"
+        "2. **重大事件 (major_events)**：记录死亡、开枪、移交警徽等关键进程。\n"
+        "3. **投票记录 (voting_records)**：记录每一轮重要的投票结果和票型详情。\n"
+        "4. **关键怀疑 (key_suspicions)**：提炼玩家之间的攻击和怀疑关系，如“A 认为 B 发言有狼味”。\n"
+        "5. **整体进度 (game_progress)**：用一句话概括当前局势。\n\n"
+        "### 严格准则：\n"
+        "- **仅记录事实**：只记录玩家说了什么，不预测玩家真实的身份。\n"
+        "- **去冗余**：保留核心逻辑，剔除废话。\n"
+        "- **增量更新**：在原有总结基础上补充最新进展。\n\n"
+        f"### 当前结构化总结：\n{current_summary.model_dump_json(indent=2) if hasattr(current_summary, 'model_dump_json') else current_summary}\n\n"
+        f"### 最新历史记录：\n{history_str}\n"
+    )
+    
+    try:
+        new_summary = structured_summarizer.invoke(prompt)
+        return {"game_summary": new_summary}
+    except Exception as e:
+        print(f"Summarizer error: {e}")
+        return {}
             
 
-def announcer_node(state: GameState, config: RunnableConfig) -> Dict[str, Any]:
-    """
-    公告节点 (Announcer)：专门负责播报上帝公告消息。
-    """
-    turn_type = state["turn_type"]
-    messages = []
-    updates = {}
-
-    print(f"\n[公告节点] 正在处理 turn_type: {turn_type}")
-
-    if turn_type == "day_announcement":
-        dead_ids = state.get("last_night_dead", [])
-        dead_info = "平安夜" if not dead_ids else f"玩家 {', '.join(map(str, dead_ids))} 死亡"
-        content = f"【上帝公告】第{state['day_count']}天。昨晚是{dead_info}。"
-        messages.append(Message(role="system", content=content))
-        print(f"📢 发送公告: {content}")
-        updates["last_night_dead"] = [] # 在公告后清空
-
-    elif turn_type == "sheriff_announcement":
-        sheriff_id = state.get("sheriff_id")
-        pk_candidates = state.get("pk_candidates")
-        if sheriff_id is not None:
-            content = f"【上帝公告】玩家 {sheriff_id} 当选警长！"
-            messages.append(Message(role="system", content=content))
-            print(f"📢 发送公告: {content}")
-        elif pk_candidates:
-            content = f"【上帝公告】警长竞选出现平票，玩家 {', '.join(map(str, pk_candidates))} 进入 PK 环节。"
-            messages.append(Message(role="system", content=content))
-            print(f"📢 发送公告: {content}")
-
-    elif turn_type == "voting_announcement":
-        pk_candidates = state.get("pk_candidates")
-        if pk_candidates:
-            content = f"【上帝公告】投票出现平票，玩家 {', '.join(map(str, pk_candidates))} 进入 PK 环节。"
-            messages.append(Message(role="system", content=content))
-            print(f"📢 发送公告: {content}")
-
-    elif turn_type == "execution_announcement":
-        target_id = state.get("last_execution_id")
-        if target_id is not None:
-            content = f"【上帝公告】投票结束，玩家 {target_id} 被处决。"
-            messages.append(Message(role="system", content=content))
-            print(f"📢 发送公告: {content}")
-        else:
-            content = "【上帝公告】投票结束，平票或全员弃票，无人被处决。"
-            messages.append(Message(role="system", content=content))
-            print(f"📢 发送公告: {content}")
-
-    elif turn_type == "hunter_announcement":
-        shoot_target = state["night_actions"].get("hunter_shoot")
-        if shoot_target:
-            content = f"【上帝公告】猎人发动反击，玩家 {shoot_target} 被射杀！"
-            messages.append(Message(role="system", content=content))
-            print(f"📢 发送公告: {content}")
-        else:
-            content = "【上帝公告】猎人选择放弃反击。"
-            messages.append(Message(role="system", content=content))
-            print(f"📢 发送公告: {content}")
-
-    elif turn_type == "sheriff_transfer_announcement":
-        target_id = state.get("last_transfer_target") 
-        if target_id is not None:
-            content = f"【上帝公告】原警长将警徽移交给玩家 {target_id}。"
-            messages.append(Message(role="system", content=content))
-            print(f"📢 发送公告: {content}")
-        else:
-            content = "【上帝公告】原警长选择撕掉警徽，本局后续将没有警长。"
-            messages.append(Message(role="system", content=content))
-            print(f"📢 发送公告: {content}")
-
-    if messages:
-        updates["history"] = messages
-    
-    return updates
